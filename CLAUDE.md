@@ -128,3 +128,29 @@ branch.
 - **eumachia** — the sibling extracted at the same time; renders an
   *interactive* pay page, which savage deliberately cannot do since it strips
   all JavaScript
+
+## Referral taps and payouts (October 2026)
+
+The HomeFront referral program: each month, 50% of what Apple pays for
+BizBuz and for LinkityLink is shared among the people whose invite cards
+were tapped, by tap count, capped at $50 a person. Logic in
+`src/server/node/referrals.js`, tested by `npm test`.
+
+- **`GET /r/:uuid?<the card's signed query>`**: an invite card's "Get"
+  button. Counts one tap per visitor per card per day (visitor = salted hash
+  of IP and user agent; the IP is `X-Real-IP` from nginx, never the
+  client-settable first `X-Forwarded-For` entry), skips link-preview bots,
+  and always redirects to the app's App Store listing from `REFERRAL_APPS`
+  (never a URL from the request). Unverifiable taps still redirect, uncounted.
+- **`GET /r/:uuid/stats?<signed query>`**: taps and payouts for that card,
+  for the app's share screen.
+- **Data:** `SAVAGE_DATA_DIR/referrals/` (default `./data/referrals`, gitignored):
+  `taps-YYYY-MM.json`, `payouts-YYYY-MM.json`, and a `.salt`. Back it up;
+  it's the record of who is owed what.
+- **Paying:** `npm run referral-payouts -- --month 2026-10 --proceeds
+  bizbuz=420.00 --proceeds linkitylink=80.00` is a dry run; add `--pay` to
+  send through addie's `/platform/payout`, signed by the platform admin key
+  (`--new-admin-key` makes one). Only https *.8as.world addies are ever sent
+  a payout request, since the addie address on a card is its owner's to
+  write. Reruns skip anyone already paid.
+

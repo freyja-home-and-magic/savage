@@ -7,6 +7,8 @@ import express from 'express';
 // property (arbitrary content from whoever had a valid signature to write
 // it) needs before being served back as live, browser-rendered markup.
 import removeJavaScript from 'teleportation-js/src/node-remove-javascript.js';
+import path from 'node:path';
+import { REFERRAL_APPS, createStore, isBot, visitorKey, monthOf, tapCount } from './referrals.js';
 // Node 18+ has a native global fetch - no need for the node-fetch package.
 
 const app = express();
@@ -308,6 +310,91 @@ app.get('/user/:uuid/bdo', async (req, res) => {
     console.warn('savage error:', err);
     res.status(500).send('Internal error');
   }
+});
+
+// ── Referral taps ───────────────────────────────────────────────────────────
+//
+// An invite card's "Get" button points here, carrying the card's own signed
+// query. savage counts the tap (see referrals.js for what counts) and sends
+// the visitor on to the App Store. The redirect target comes from
+// REFERRAL_APPS, never from the request, and a tap that can't be verified
+// still gets its redirect, it just isn't counted.
+const referralStore = createStore(process.env.SAVAGE_DATA_DIR
+  ? path.join(process.env.SAVAGE_DATA_DIR, 'referrals')
+  : path.join(process.cwd(), 'data', 'referrals'));
+
+// The visitor's address as nginx saw it. X-Real-IP is set (overwritten) by
+// our nginx from the connection itself; X-Forwarded-For can't be trusted
+// for this, because a client can send its own and nginx appends to it, so
+// its FIRST entry is whatever the client claimed. Failing X-Real-IP, the
+// LAST entry is the one nginx added.
+const clientIp = (req) => {
+  const real = req.get('x-real-ip');
+  if (real) return real.trim();
+  const chain = (req.get('x-forwarded-for') || '').split(',').map((v) => v.trim()).filter(Boolean);
+  return chain[chain.length - 1] || req.socket.remoteAddress || '';
+};
+const today = () => new Date().toISOString().slice(0, 10);
+
+app.get('/r/:uuid', async (req, res) => {
+  const referral = REFERRAL_APPS[req.query.hash];
+  if (!referral) {
+    return res.status(404).send('Not an invite link');
+  }
+  res.set('Cache-Control', 'no-store');
+  try {
+    const ua = req.get('user-agent');
+    if (!isBot(ua)) {
+      const result = await fetchBdo(req.params.uuid, req.query);
+      if (!result.error && result.bdo && result.bdo.svg) {
+        const payout = result.bdo.payout && result.bdo.payout.pubKey && result.bdo.payout.addieURL
+          ? { pubKey: result.bdo.payout.pubKey, addieURL: result.bdo.payout.addieURL }
+          : null;
+        const date = today();
+        const salt = await referralStore.salt();
+        await referralStore.recordTap({
+          uuid: req.params.uuid,
+          app: referral.app,
+          payout,
+          visitor: visitorKey(salt, clientIp(req), ua, req.params.uuid, date),
+          date,
+        });
+      }
+    }
+  } catch (err) {
+    // Counting must never cost the visitor their App Store link.
+    console.warn('referral tap not counted:', err.message);
+  }
+  res.redirect(302, referral.storeUrl);
+});
+
+// What an invite card has earned, for the app's share screen. Same signed
+// query as the card, so only someone holding the link can read it.
+app.get('/r/:uuid/stats', async (req, res) => {
+  if (!REFERRAL_APPS[req.query.hash]) {
+    return res.status(404).send({ error: 'Not an invite link' });
+  }
+  const result = await fetchBdo(req.params.uuid, req.query);
+  if (result.error || !result.bdo) {
+    return res.status(result.status || 404).send({ error: 'Not found' });
+  }
+  const months = [];
+  for (const month of (await referralStore.months()).slice(0, 12)) {
+    const card = (await referralStore.taps(month))[req.params.uuid];
+    const ledger = await referralStore.payouts(month);
+    const paid = ledger?.payees?.find((p) => p.cards?.includes(req.params.uuid));
+    if (card || paid) {
+      months.push({
+        month,
+        taps: card ? tapCount(card) : 0,
+        paidCents: paid?.status === 'paid' ? paid.amountCents : 0,
+        pendingCents: paid && paid.status !== 'paid' ? paid.amountCents : 0,
+      });
+    }
+  }
+  const current = monthOf(today());
+  const thisMonth = months.find((m) => m.month === current) || { month: current, taps: 0, paidCents: 0, pendingCents: 0 };
+  res.send({ thisMonth, months, connected: Boolean(result.bdo.payout) });
 });
 
 // Listen unconditionally, the same way bdo.js and addie.js do.

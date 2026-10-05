@@ -13,13 +13,15 @@
     "start": "node savage.js",
     "test:sanitize": "node scripts/test-sanitize.mjs",
     "test:vcard": "node scripts/test-vcard.mjs",
-    "smoke": "node scripts/smoke-test.mjs"
+    "smoke": "node scripts/smoke-test.mjs",
+    "test": "node --test 'test/*.test.js'",
+    "referral-payouts": "node scripts/referral-payouts.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",
     "teleportation-js": "latest"
   },
-  "//": "sessionless-node is a devDependency because scripts/*.mjs sign their own test requests. It currently also resolves as a transitive dep of teleportation-js; declaring it keeps the tests working if that ever changes. (npm reads every key inside a dependency block as a package name, so this note has to live at the top level — '//' is npm's own convention for it.)",
+  "//": "sessionless-node is a devDependency because scripts/*.mjs sign their own test requests. It currently also resolves as a transitive dep of teleportation-js; declaring it keeps the tests working if that ever changes. (npm reads every key inside a dependency block as a package name, so this note has to live at the top level \u2014 '//' is npm's own convention for it.)",
   "devDependencies": {
     "sessionless-node": "^0.11.0"
   }
