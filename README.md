@@ -45,6 +45,8 @@ it.
 | `PORT` | `3012` | Listen port. Not savage's historical 3009 — on a shared allyabase box that belongs to minnie. |
 | `BDO_URL` | see below | Base URL of the BDO to read through to. A missing trailing slash is added for you. |
 | `PUBLIC_PREFIX` | `""` | Path prefix savage is mounted under externally, e.g. `/savage`. Only needed when the proxy doesn't send `X-Forwarded-Prefix`. |
+| `SAVAGE_DATA_DIR` | `./data` | Where referral taps and payouts are kept (`referrals/` under it). Back it up. |
+| `SAVAGE_GET_APP_CTA` | off | `on` adds a "Make your own" button to BizBuz and Linkitylink card pages, through the referral tap counter. Turn on when the referral program launches. |
 | `LOCALHOST` | unset | Legacy shorthand: when set, `BDO_URL` becomes `http://127.0.0.1:3003/`. |
 | `SUBDOMAIN` | `dev` | Legacy: used only in the `https://<subdomain>.bdo.allyabase.com/` fallback. |
 

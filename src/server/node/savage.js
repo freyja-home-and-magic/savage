@@ -8,7 +8,7 @@ import express from 'express';
 // it) needs before being served back as live, browser-rendered markup.
 import removeJavaScript from 'teleportation-js/src/node-remove-javascript.js';
 import path from 'node:path';
-import { REFERRAL_APPS, createStore, isBot, visitorKey, monthOf, tapCount } from './referrals.js';
+import { REFERRAL_APPS, createStore, getAppCta, isBot, visitorKey, monthOf, tapCount } from './referrals.js';
 // Node 18+ has a native global fetch - no need for the node-fetch package.
 
 const app = express();
@@ -117,7 +117,7 @@ const resolvePalette = (palette) => {
   };
 };
 
-const wrapHTML = (svg, imageUrl, title, vcardUrl, palette, description) => {
+const wrapHTML = (svg, imageUrl, title, vcardUrl, palette, description, cta) => {
   const { background, accent, accentText } = resolvePalette(palette);
   const safeTitle = escapeHtml(title);
   const safeDescription = escapeHtml(description);
@@ -141,6 +141,7 @@ ${safeDescription ? `<meta name="description" content="${safeDescription}">
 <body style="margin:0; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; background:${background}; gap:20px;">
 ${svg}
 ${vcardUrl ? `<a href="${vcardUrl}" style="font-family:sans-serif; font-size:15px; font-weight:bold; padding:12px 28px; background:${accent}; color:${accentText}; border-radius:8px; text-decoration:none;">Save Contact</a>` : ''}
+${cta ? `<a href="${escapeHtml(cta.href)}" style="font-family:sans-serif; font-size:14px; font-weight:bold; padding:10px 24px; border:2px solid ${accent}; color:${accent}; border-radius:8px; text-decoration:none;">${escapeHtml(cta.label)}</a>` : ''}
 </body>
 </html>`;
 };
@@ -302,10 +303,18 @@ app.get('/user/:uuid/bdo', async (req, res) => {
       description = `${description.slice(0, 159)}\u2026`;
     }
 
+    // "Make your own" on BizBuz and Linkitylink cards, through the tap
+    // counter so a tap credits the card's owner (see referrals.js).
+    const cta = getAppCta(
+      req.query.hash,
+      absoluteUrl(req, `/r/${req.params.uuid}${qs ? `?${qs}` : ''}`),
+      process.env.SAVAGE_GET_APP_CTA === 'on'
+    );
+
     res.set('Content-Type', 'text/html');
     // palette is optional and validated in wrapHTML; a record without one
     // renders exactly as it did before palettes existed.
-    res.send(wrapHTML(result.bdo.svg, imageUrl, title, vcardUrl, result.bdo.palette, description));
+    res.send(wrapHTML(result.bdo.svg, imageUrl, title, vcardUrl, result.bdo.palette, description, cta));
   } catch (err) {
     console.warn('savage error:', err);
     res.status(500).send('Internal error');

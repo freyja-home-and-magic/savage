@@ -133,7 +133,7 @@ branch.
 
 The HomeFront referral program: each month, 50% of what Apple pays for
 BizBuz and for LinkityLink is shared among the people whose invite cards
-were tapped, by tap count, capped at $50 a person. Logic in
+and card pages were tapped through to the App Store, by tap count, capped at $50 a person. Logic in
 `src/server/node/referrals.js`, tested by `npm test`.
 
 - **`GET /r/:uuid?<the card's signed query>`**: an invite card's "Get"
@@ -144,6 +144,14 @@ were tapped, by tap count, capped at $50 a person. Logic in
   (never a URL from the request). Unverifiable taps still redirect, uncounted.
 - **`GET /r/:uuid/stats?<signed query>`**: taps and payouts for that card,
   for the app's share screen.
+- **"Make your own" on card pages:** with `SAVAGE_GET_APP_CTA=on`, the page
+  for an ordinary BizBuz or Linkitylink card (hash `bizbuz-card` /
+  `linkitylink-card`) gets a second button under "Save Contact", pointing at
+  `/r/:uuid` with the card's own signed query. Taps credit the card's owner
+  exactly like invite taps, and share the same $50 cap, when the card
+  carries a `payout` (the apps add it once the program is live and the
+  owner is connected in GetPayed). Invite cards get no extra button; they
+  already are one. Off by default, so flip it with the program's launch.
 - **Data:** `SAVAGE_DATA_DIR/referrals/` (default `./data/referrals`, gitignored):
   `taps-YYYY-MM.json`, `payouts-YYYY-MM.json`, and a `.salt`. Back it up;
   it's the record of who is owed what.

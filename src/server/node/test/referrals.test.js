@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { computePayouts, createStore, isBot, tapCount, visitorKey, REFERRAL_APPS } from '../referrals.js';
+import { computePayouts, createStore, getAppCta, isBot, tapCount, visitorKey, REFERRAL_APPS } from '../referrals.js';
 
 const alice = { pubKey: '02alice', addieURL: 'https://prod.8as.world/addie/' };
 const bob = { pubKey: '02bob', addieURL: 'https://prod.8as.world/addie/' };
@@ -33,10 +33,31 @@ test('visitor keys are stable within a day and never the raw IP', () => {
 });
 
 test('redirects only to the two App Store listings', () => {
-  assert.deepEqual(Object.values(REFERRAL_APPS).map((a) => a.storeUrl), [
+  assert.deepEqual([...new Set(Object.values(REFERRAL_APPS).map((a) => a.storeUrl))], [
     'https://apps.apple.com/app/id6808065888',
     'https://apps.apple.com/app/id6808065892',
   ]);
+});
+
+test('"make your own" only on ordinary cards, and only when switched on', () => {
+  assert.deepEqual(getAppCta('bizbuz-card', '/r/x', true), { label: 'Make your own card with BizBuz', href: '/r/x' });
+  assert.equal(getAppCta('linkitylink-card', '/r/x', true).label, 'Make your own link page with Linkitylink');
+  assert.equal(getAppCta('bizbuz-card', '/r/x', false), null, 'off unless SAVAGE_GET_APP_CTA=on');
+  assert.equal(getAppCta('bizbuz-referral', '/r/x', true), null, 'an invite card is already the button');
+  assert.equal(getAppCta('someone-elses-hash', '/r/x', true), null);
+});
+
+test('card taps and invite taps share one person\'s cap', () => {
+  const taps = {
+    invite: { app: 'bizbuz', payout: alice, days: { '2026-10-01': ['a', 'b'] } },
+    card: { app: 'bizbuz', payout: alice, days: { '2026-10-01': ['c', 'd', 'e'] } },
+    other: { app: 'bizbuz', payout: bob, days: { '2026-10-01': ['f', 'g', 'h', 'i', 'j'] } },
+  };
+  const r = computePayouts(taps, { bizbuz: 4_000 }); // $20 pool, 10 taps
+  const byKey = Object.fromEntries(r.payees.map((p) => [p.payout.pubKey, p]));
+  assert.equal(byKey['02alice'].taps, 5);
+  assert.deepEqual(byKey['02alice'].cards.sort(), ['card', 'invite']);
+  assert.equal(byKey['02alice'].amountCents, 1_000);
 });
 
 test('one tap per visitor per card per day', async () => {

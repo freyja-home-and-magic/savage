@@ -18,10 +18,26 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 // The only places a tap can redirect to: no open redirect, whatever the
-// query says. Keyed by the BDO hash each app publishes its invite card under.
+// query says. Keyed by the BDO hash each app publishes under: its invite
+// card, and its ordinary cards, whose pages carry a "make your own" button
+// (getAppCta). A tap on either credits the card's owner, if the card
+// carries their payout destination; both count toward the same share.
+const BIZBUZ_STORE = 'https://apps.apple.com/app/id6808065888';
+const LINKITYLINK_STORE = 'https://apps.apple.com/app/id6808065892';
 export const REFERRAL_APPS = {
-  'bizbuz-referral': { app: 'bizbuz', storeUrl: 'https://apps.apple.com/app/id6808065888' },
-  'linkitylink-referral': { app: 'linkitylink', storeUrl: 'https://apps.apple.com/app/id6808065892' },
+  'bizbuz-referral': { app: 'bizbuz', storeUrl: BIZBUZ_STORE, kind: 'invite' },
+  'linkitylink-referral': { app: 'linkitylink', storeUrl: LINKITYLINK_STORE, kind: 'invite' },
+  'bizbuz-card': { app: 'bizbuz', storeUrl: BIZBUZ_STORE, kind: 'card', cta: 'Make your own card with BizBuz' },
+  'linkitylink-card': { app: 'linkitylink', storeUrl: LINKITYLINK_STORE, kind: 'card', cta: 'Make your own link page with Linkitylink' },
+};
+
+/// The "make your own" button for a card's page, or null: only on ordinary
+/// BizBuz and Linkitylink cards (an invite card is already one big button),
+/// and only when switched on (SAVAGE_GET_APP_CTA=on).
+export const getAppCta = (hash, href, enabled) => {
+  const app = REFERRAL_APPS[hash];
+  if (!enabled || !app || app.kind !== 'card') return null;
+  return { label: app.cta, href };
 };
 
 export const POOL_PERCENT = 50;
