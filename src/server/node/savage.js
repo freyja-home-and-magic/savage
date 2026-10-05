@@ -371,6 +371,9 @@ app.get('/r/:uuid', async (req, res) => {
 // What an invite card has earned, for the app's share screen. Same signed
 // query as the card, so only someone holding the link can read it.
 app.get('/r/:uuid/stats', async (req, res) => {
+  // Read by the BizBuz and LinkityLink share screens, from inside the app's
+  // web view. Any origin may ask: the signed query is the credential.
+  res.set('Access-Control-Allow-Origin', '*');
   if (!REFERRAL_APPS[req.query.hash]) {
     return res.status(404).send({ error: 'Not an invite link' });
   }
