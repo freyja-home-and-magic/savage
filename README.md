@@ -47,6 +47,8 @@ it.
 | `PUBLIC_PREFIX` | `""` | Path prefix savage is mounted under externally, e.g. `/savage`. Only needed when the proxy doesn't send `X-Forwarded-Prefix`. |
 | `SAVAGE_DATA_DIR` | `./data` | Where referral taps and payouts are kept (`referrals/` under it). Back it up. |
 | `SAVAGE_GET_APP_CTA` | off | `on` adds a "Make your own" button to BizBuz and Linkitylink card pages, through the referral tap counter. Turn on when the referral program launches. |
+| `SHORT_LINK_BASE` | this request's address + `/l/` | Origin of Linkitylink short links, e.g. `https://linkityl.ink/` (`https://dev.linkityl.ink/` on dev). |
+| `CARD_PAGES_URL` | this request's address | Where short links redirect to, e.g. `https://prod.8as.world/savage/`. Must be set behind the linkityl.ink proxy. |
 | `LOCALHOST` | unset | Legacy shorthand: when set, `BDO_URL` becomes `http://127.0.0.1:3003/`. |
 | `SUBDOMAIN` | `dev` | Legacy: used only in the `https://<subdomain>.bdo.allyabase.com/` fallback. |
 

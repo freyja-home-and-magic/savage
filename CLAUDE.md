@@ -162,3 +162,26 @@ and card pages were tapped through to the App Store, by tap count, capped at $50
   a payout request, since the addie address on a card is its owner's to
   write. Reruns skip anyone already paid.
 
+## Linkitylink short links (October 2026)
+
+`linkityl.ink/<name>`, and `linkityl.ink/2/<name>`, `/3/<name>`... when
+the name is already taken (first come, first served). Logic in
+`src/server/node/shortlinks.js`; nginx server blocks in allyabase's
+`deployment/digitalocean/{,dev.}linkityl.ink.nginx.conf` send every path to
+`/l/`, passing `$request_uri` so non-ASCII names arrive intact.
+
+- **`POST /l`** `{uuid, timestamp, hash, signature}`: the Linkitylink app
+  calls this after each publish, with the card's own signed query. savage
+  fetches the card with it (so only a real `linkitylink-card` can register)
+  and takes the name from the card. Answers `{path, url}`.
+- **`GET /l/<name>`, `/l/<n>/<name>`**: 302 to the card's page at
+  `CARD_PAGES_URL`. Names are tidied the same way both ways (lower case,
+  anything but letters and digits becomes a hyphen), so `/Jane-Doe` finds
+  `jane-doe`. `GET /l/` goes to the App Store listing.
+- **A card keeps its place:** republishing returns the same link; renaming
+  adds a link for the new name and keeps the old one, which may be printed.
+  Nothing is ever reassigned, so a deleted card's link 404s on the card page
+  rather than pointing at someone else.
+- **Data:** `SAVAGE_DATA_DIR/shortlinks/shortlinks.json`. Back it up with
+  `referrals/`; losing it breaks every short link handed out.
+

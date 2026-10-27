@@ -9,6 +9,7 @@ import express from 'express';
 import removeJavaScript from 'teleportation-js/src/node-remove-javascript.js';
 import path from 'node:path';
 import { REFERRAL_APPS, createStore, getAppCta, isBot, visitorKey, monthOf, tapCount } from './referrals.js';
+import { SHORT_LINK_HASH, createShortLinkStore, parseShortPath } from './shortlinks.js';
 // Node 18+ has a native global fetch - no need for the node-fetch package.
 
 const app = express();
@@ -422,6 +423,59 @@ app.get('/r/:uuid/stats', async (req, res) => {
 // 3012, not savage's historical 3009: on the shared allyabase box 3009 is
 // minnie's. PORT overrides it, and deployment should set it explicitly.
 const PORT = process.env.PORT || 3012;
+// ── Short links (linkityl.ink) ───────────────────────────────────────────────
+//
+// See shortlinks.js. nginx proxies linkityl.ink/* (dev.linkityl.ink/* on
+// dev) to /l/*. Two settings:
+//   SHORT_LINK_BASE  the short links' own origin, e.g. https://linkityl.ink/
+//   CARD_PAGES_URL   where card pages live, e.g. https://prod.8as.world/savage/
+// Unset, both fall back to this request's own address, which is right for
+// local testing and wrong behind the linkityl.ink proxy.
+const shortLinkStore = createShortLinkStore(process.env.SAVAGE_DATA_DIR
+  ? path.join(process.env.SAVAGE_DATA_DIR, 'shortlinks')
+  : path.join(process.cwd(), 'data', 'shortlinks'));
+const LINKITYLINK_STORE_URL = 'https://apps.apple.com/app/id6808065892';
+const withSlash = (url) => (url.endsWith('/') ? url : `${url}/`);
+
+// Called by the Linkitylink app after it publishes a card, with the same
+// signed query the card's long link carries. Answers { path, url }.
+app.post('/l', express.json(), async (req, res) => {
+  const { uuid, timestamp, hash, signature } = req.body || {};
+  if (typeof uuid !== 'string' || !/^[0-9a-f-]{8,64}$/i.test(uuid) || hash !== SHORT_LINK_HASH
+      || typeof timestamp !== 'string' || typeof signature !== 'string') {
+    return res.status(400).json({ error: 'Send the card\'s uuid, timestamp, hash and signature' });
+  }
+  const query = { timestamp, hash, signature };
+  const result = await fetchBdo(uuid, query);
+  if (result.error || !result.bdo) {
+    return res.status(403).json({ error: 'That card could not be verified' });
+  }
+  try {
+    const { path: shortPath } = await shortLinkStore.claim(uuid, result.bdo.name, query);
+    const base = withSlash(process.env.SHORT_LINK_BASE || absoluteUrl(req, '/l/'));
+    res.json({ path: shortPath, url: `${base}${shortPath}` });
+  } catch (err) {
+    console.error('short link claim failed', err);
+    res.status(500).json({ error: 'Could not make a short link' });
+  }
+});
+
+const followShortLink = async (req, res) => {
+  const parsed = parseShortPath(req.params.first, req.params.second);
+  const card = parsed && await shortLinkStore.lookup(parsed.slug, parsed.ordinal);
+  if (!card) {
+    return res.status(404).send('No card at this link');
+  }
+  const pages = withSlash(process.env.CARD_PAGES_URL || absoluteUrl(req, '/'));
+  res.set('Cache-Control', 'no-store');
+  res.redirect(302, `${pages}user/${card.uuid}/bdo?${new URLSearchParams(card.query)}`);
+};
+
+// linkityl.ink itself: the app's listing.
+app.get('/l', (req, res) => res.redirect(302, LINKITYLINK_STORE_URL));
+app.get('/l/:first', followShortLink);
+app.get('/l/:first/:second', followShortLink);
+
 app.listen(PORT, () => console.log(`savage listening on ${PORT}`));
 
 export default app;
