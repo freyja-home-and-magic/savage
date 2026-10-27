@@ -166,8 +166,8 @@ and card pages were tapped through to the App Store, by tap count, capped at $50
 
 `linkityl.ink/<name>`, and `linkityl.ink/2/<name>`, `/3/<name>`... when
 the name is already taken (first come, first served). Logic in
-`src/server/node/shortlinks.js`; nginx server blocks in allyabase's
-`deployment/digitalocean/{,dev.}linkityl.ink.nginx.conf` send every path to
+`src/server/node/shortlinks.js`; nginx server blocks in the linkitylink
+repo's `deploy/nginx/{,dev.}linkityl.ink.nginx.conf` send every path to
 `/l/`, passing `$request_uri` so non-ASCII names arrive intact.
 
 - **`POST /l`** `{uuid, timestamp, hash, signature}`: the Linkitylink app
