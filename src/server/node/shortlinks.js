@@ -13,6 +13,12 @@
 // place for good: republishing returns the same link, and renaming adds a
 // link for the new name without taking away the old one, which may already
 // be printed or shared.
+//
+// A link outlives its card, too. The app registers each card with its
+// owner, a key it keeps for the life of the install, so when someone deletes
+// a card and makes a new one under the same name, the new card gets the old
+// link back. Nobody else ever gets it: a link whose owner is gone for good
+// stays reserved, and 404s, rather than pointing at a stranger.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -53,7 +59,8 @@ export const parseShortPath = (first, second) => {
 
 /// The lookup, one JSON file under `dir`:
 ///   names: slug -> [uuid, uuid, ...]  (position + 1 is the ordinal)
-///   cards: uuid -> { query }          (the signed query to fetch it with)
+///   cards: uuid -> { query, owner }   (the signed query to fetch it with,
+///                                      and its owner's pubKey if known)
 /// Writes are serialised and atomic (temp file, then rename).
 export const createShortLinkStore = (dir) => {
   const file = path.join(dir, 'shortlinks.json');
@@ -81,18 +88,32 @@ export const createShortLinkStore = (dir) => {
   return {
     /// Gives a card a place under its name, or returns the one it has.
     /// `query` is kept fresh: the latest signed query the app sent.
-    claim: (uuid, name, query) =>
+    ///
+    /// With an `owner`, a new card takes back a place its owner already
+    /// holds under this name, but only once the card there is gone
+    /// (`isGone(uuid, query)` resolves true), so two live cards of one owner with
+    /// one name each keep their own link.
+    claim: (uuid, name, query, { owner, isGone } = {}) =>
       serial(async () => {
         const data = await read();
         const slug = slugify(name);
         const holders = data.names[slug] || [];
         let index = holders.indexOf(uuid);
+        if (index === -1 && owner && isGone) {
+          for (const [i, held] of holders.entries()) {
+            if (data.cards[held]?.owner === owner && await isGone(held, data.cards[held].query)) {
+              holders[i] = uuid;
+              index = i;
+              break;
+            }
+          }
+        }
         if (index === -1) {
           holders.push(uuid);
           index = holders.length - 1;
         }
         data.names[slug] = holders;
-        data.cards[uuid] = { query };
+        data.cards[uuid] = { query, owner: owner || data.cards[uuid]?.owner };
         await write(data);
         return { slug, ordinal: index + 1, path: shortPath(slug, index + 1) };
       }),

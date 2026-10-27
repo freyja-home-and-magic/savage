@@ -8,6 +8,7 @@ import express from 'express';
 // it) needs before being served back as live, browser-rendered markup.
 import removeJavaScript from 'teleportation-js/src/node-remove-javascript.js';
 import path from 'node:path';
+import sessionless from 'sessionless-node';
 import { REFERRAL_APPS, createStore, getAppCta, isBot, visitorKey, monthOf, tapCount } from './referrals.js';
 import { SHORT_LINK_HASH, createShortLinkStore, parseShortPath } from './shortlinks.js';
 // Node 18+ has a native global fetch - no need for the node-fetch package.
@@ -437,13 +438,41 @@ const shortLinkStore = createShortLinkStore(process.env.SAVAGE_DATA_DIR
 const LINKITYLINK_STORE_URL = 'https://apps.apple.com/app/id6808065892';
 const withSlash = (url) => (url.endsWith('/') ? url : `${url}/`);
 
+// The owner's signature over the same message as the card's, so it can't
+// be lifted onto another card.
+const ownerSigned = (owner, ownerSignature, message) => {
+  try {
+    return /^0[23][0-9a-f]{64}$/i.test(owner) && typeof ownerSignature === 'string'
+      && sessionless.verifySignature(ownerSignature, message, owner);
+  } catch {
+    return false;
+  }
+};
+
+// A card BDO no longer has: BDO answers a deleted one with `bdo: null`
+// (or a 404). Anything else (an outage, a refusal) counts as still there,
+// so a link is never handed on by mistake.
+const cardIsGone = async (uuid, query) => {
+  try {
+    const result = await fetchBdo(uuid, query);
+    return result.error ? result.status === 404 : result.bdo == null;
+  } catch {
+    return false;
+  }
+};
+
 // Called by the Linkitylink app after it publishes a card, with the same
-// signed query the card's long link carries. Answers { path, url }.
+// signed query the card's long link carries, plus optionally the owner's
+// pubKey and their signature over the same message, which lets a new card
+// take back its owner's link under the same name. Answers { path, url }.
 app.post('/l', express.json(), async (req, res) => {
-  const { uuid, timestamp, hash, signature } = req.body || {};
+  const { uuid, timestamp, hash, signature, owner, ownerSignature } = req.body || {};
   if (typeof uuid !== 'string' || !/^[0-9a-f-]{8,64}$/i.test(uuid) || hash !== SHORT_LINK_HASH
       || typeof timestamp !== 'string' || typeof signature !== 'string') {
     return res.status(400).json({ error: 'Send the card\'s uuid, timestamp, hash and signature' });
+  }
+  if (owner !== undefined && !ownerSigned(owner, ownerSignature, timestamp + uuid + hash)) {
+    return res.status(400).json({ error: 'The owner signature doesn\'t match' });
   }
   const query = { timestamp, hash, signature };
   const result = await fetchBdo(uuid, query);
@@ -451,7 +480,8 @@ app.post('/l', express.json(), async (req, res) => {
     return res.status(403).json({ error: 'That card could not be verified' });
   }
   try {
-    const { path: shortPath } = await shortLinkStore.claim(uuid, result.bdo.name, query);
+    const { path: shortPath } = await shortLinkStore.claim(uuid, result.bdo.name, query,
+      { owner: owner?.toLowerCase(), isGone: cardIsGone });
     const base = withSlash(process.env.SHORT_LINK_BASE || absoluteUrl(req, '/l/'));
     res.json({ path: shortPath, url: `${base}${shortPath}` });
   } catch (err) {

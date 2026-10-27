@@ -66,3 +66,32 @@ test('short paths read back, and nothing else does', () => {
   assert.equal(shortPath('zoë', 1), 'zo%C3%AB');
   assert.equal(shortPath('zoë', 2), '2/zo%C3%AB');
 });
+
+test('an owner\'s new card takes back the link of their deleted one', async () => {
+  const store = await newStore();
+  const gone = new Set();
+  const isGone = async (uuid) => gone.has(uuid);
+  await store.claim('u1', 'Jane', q('a'), { owner: 'alice', isGone });
+  await store.claim('u2', 'Jane', q('b'), { owner: 'bob', isGone });
+  gone.add('u1');
+  assert.equal((await store.claim('u3', 'Jane', q('c'), { owner: 'alice', isGone })).path, 'jane');
+  assert.deepEqual(await store.lookup('jane', 1), { uuid: 'u3', query: q('c') });
+  assert.equal((await store.lookup('jane', 2)).uuid, 'u2', 'bob keeps his');
+});
+
+test('nobody else gets a deleted card\'s link', async () => {
+  const store = await newStore();
+  const isGone = async (uuid) => uuid === 'u1';
+  await store.claim('u1', 'Jane', q('a'), { owner: 'alice', isGone });
+  assert.equal((await store.claim('u2', 'Jane', q('b'), { owner: 'bob', isGone })).path, '2/jane');
+  assert.equal((await store.claim('u3', 'Jane', q('c'), { isGone })).path, '3/jane', 'no owner, no reuse');
+  assert.equal((await store.lookup('jane', 1)).uuid, 'u1');
+});
+
+test('an owner\'s two live cards with one name keep a link each', async () => {
+  const store = await newStore();
+  const isGone = async () => false;
+  await store.claim('u1', 'Jane', q('a'), { owner: 'alice', isGone });
+  assert.equal((await store.claim('u2', 'Jane', q('b'), { owner: 'alice', isGone })).path, '2/jane');
+  assert.equal((await store.lookup('jane', 1)).uuid, 'u1');
+});
