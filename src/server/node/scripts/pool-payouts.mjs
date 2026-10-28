@@ -1,29 +1,32 @@
-// Monthly referral payouts. Run on the server that hosts savage, after the
-// month ends and Apple's proceeds for it are known (App Store Connect,
-// Payments and Financial Reports).
+// Monthly payment pool payouts (getpayed/PAYMENT_POOL.md, pool.js). Run on
+// the server that hosts savage, after the month ends and Apple's proceeds
+// for it are known (App Store Connect, Payments and Financial Reports).
 //
-//   node scripts/referral-payouts.mjs --month 2026-10 --proceeds bizbuz=420.00 --proceeds linkitylink=80.00
-//       Dry run: prints each payee's share and moves no money.
+//   node scripts/pool-payouts.mjs --month 2026-10 --proceeds bizbuz=420.00 --proceeds linkitylink=80.00
+//       Dry run: prints each person's share and moves no money.
 //
 //   ... --pay
 //       Pays them, through addie's /platform/payout, signed with the
 //       platform admin key (PLATFORM_ADMIN_PRIVATE_KEY and _PUBLIC_KEY in
 //       the environment; addie must have the same public key as
-//       PLATFORM_ADMIN_PUBKEY). Results go to data/referrals/payouts-MONTH.json.
+//       PLATFORM_ADMIN_PUBKEY). Results go to data/pool/payouts-MONTH.json.
 //       Safe to rerun: anyone already paid is skipped, and Stripe refuses a
 //       repeat of the same idempotency key anyway.
 //
-//   node scripts/referral-payouts.mjs --new-admin-key
+//   node scripts/pool-payouts.mjs --new-admin-key
 //       Makes a keypair for the above. Keep the private key off any repo.
 //
-// --proceeds is what Apple paid you for that app in that month, in dollars.
-// 50% of it is shared by tap counts, capped at $50 a person (referrals.js).
-// The platform's Stripe balance has to cover the total: this money came from
-// Apple, not through Stripe, so top the balance up first.
+// --proceeds is what Apple paid for each app that month, in dollars; the
+// pool is 50% of their total, shared by the nineum each person earned that
+// month, capped at two standard deviations above the average share, with
+// what the cap frees shared among the rest. Only people who registered a
+// payout destination take part. The platform's Stripe balance has to cover
+// the total: this money came from Apple, not through Stripe, so top the
+// balance up first.
 
 import path from 'node:path';
 import sessionless from 'sessionless-node';
-import { computePayouts, createStore, POOL_PERCENT, CAP_CENTS } from '../referrals.js';
+import { computePoolPayouts, createPoolStore, POOL_PERCENT } from '../pool.js';
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
@@ -70,18 +73,16 @@ if (!Object.keys(proceedsCents).length) {
 }
 
 const dataDir = values('--data-dir')[0]
-  || (process.env.SAVAGE_DATA_DIR ? path.join(process.env.SAVAGE_DATA_DIR, 'referrals') : path.join(process.cwd(), 'data', 'referrals'));
-const store = createStore(dataDir);
-const result = computePayouts(await store.taps(month), proceedsCents);
+  || (process.env.SAVAGE_DATA_DIR ? path.join(process.env.SAVAGE_DATA_DIR, 'pool') : path.join(process.cwd(), 'data', 'pool'));
+const store = createPoolStore(dataDir);
+const totalProceeds = Object.values(proceedsCents).reduce((n, c) => n + c, 0);
+const result = computePoolPayouts(await store.tally(month), await store.members(), totalProceeds);
 
-console.log(`Referral payouts for ${month}: ${POOL_PERCENT}% of proceeds, cap ${dollars(CAP_CENTS)} a person\n`);
-for (const [app, p] of Object.entries(result.pools)) {
-  console.log(`  ${app.padEnd(12)} proceeds ${dollars(p.proceedsCents).padStart(10)}  pool ${dollars(p.poolCents).padStart(10)}  taps ${p.taps}`);
-}
-console.log('');
+console.log(`Pool payouts for ${month}: ${POOL_PERCENT}% of ${dollars(totalProceeds)} proceeds = ${dollars(result.poolCents)}`);
+console.log(`  ${result.nineum} nineum among people with a payout destination; cap ${result.capCents === null ? 'n/a' : dollars(result.capCents)}\n`);
 for (const p of result.payees) {
-  const capped = p.amountCents < p.earnedCents ? ` (earned ${dollars(p.earnedCents)}, capped)` : '';
-  console.log(`  ${p.payout.pubKey.slice(0, 14)}…  ${String(p.taps).padStart(5)} taps  ${dollars(p.amountCents).padStart(9)}${capped}`);
+  const capped = p.capped ? ` (earned ${dollars(p.earnedCents)}, capped)` : '';
+  console.log(`  ${p.pubKey.slice(0, 14)}…  ${String(p.nineum).padStart(6)} nineum  ${dollars(p.amountCents).padStart(9)}${capped}`);
 }
 console.log(`\n  Paying ${dollars(result.paidCents)} to ${result.payees.length} people; ${dollars(result.retainedCents)} of the pool stays with the platform.`);
 
@@ -113,20 +114,21 @@ const allowedAddie = (url) => {
 
 const ledger = (await store.payouts(month)) || { month, payees: [] };
 ledger.proceedsCents = proceedsCents;
-ledger.pools = result.pools;
+ledger.poolCents = result.poolCents;
+ledger.capCents = result.capCents;
 for (const p of result.payees) {
-  const existing = ledger.payees.find((e) => e.payout.pubKey === p.payout.pubKey && e.payout.addieURL === p.payout.addieURL);
+  const existing = ledger.payees.find((e) => e.pubKey === p.pubKey);
   if (existing?.status === 'paid') {
-    console.log(`  ${p.payout.pubKey.slice(0, 14)}…  already paid (${existing.transferId}), skipping`);
+    console.log(`  ${p.pubKey.slice(0, 14)}…  already paid (${existing.transferId}), skipping`);
     continue;
   }
   const entry = { ...p, status: 'failed', error: null, transferId: null };
   if (!allowedAddie(p.payout.addieURL)) {
     entry.error = `addie ${p.payout.addieURL} is not one of ours`;
   } else {
-    const idempotencyKey = `referral-${month}-${p.payout.pubKey}`;
+    const idempotencyKey = `pool-${month}-${p.pubKey}`;
     const timestamp = Date.now().toString();
-    const body = { timestamp, payeePubKey: p.payout.pubKey, amount: p.amountCents, idempotencyKey, description: `HomeFront referral payout, ${month}` };
+    const body = { timestamp, payeePubKey: p.payout.pubKey, amount: p.amountCents, idempotencyKey, description: `HomeVentory payment pool, ${month}` };
     body.signature = await sessionless.sign(`${timestamp}${p.payout.pubKey}${p.amountCents}${idempotencyKey}`);
     try {
       const url = new URL('platform/payout', p.payout.addieURL.endsWith('/') ? p.payout.addieURL : `${p.payout.addieURL}/`);
@@ -143,10 +145,10 @@ for (const p of result.payees) {
     }
   }
   entry.at = new Date().toISOString();
-  ledger.payees = ledger.payees.filter((e) => !(e.payout.pubKey === p.payout.pubKey && e.payout.addieURL === p.payout.addieURL));
+  ledger.payees = ledger.payees.filter((e) => e.pubKey !== p.pubKey);
   ledger.payees.push(entry);
   await store.writePayouts(month, ledger);
-  console.log(`  ${p.payout.pubKey.slice(0, 14)}…  ${entry.status === 'paid' ? `paid ${dollars(p.amountCents)} (${entry.transferId})` : `NOT paid: ${entry.error}`}`);
+  console.log(`  ${p.pubKey.slice(0, 14)}…  ${entry.status === 'paid' ? `paid ${dollars(p.amountCents)} (${entry.transferId})` : `NOT paid: ${entry.error}`}`);
 }
 const failed = ledger.payees.filter((e) => e.status !== 'paid').length;
 console.log(failed ? `\n${failed} payout(s) failed; fix the cause and run again with --pay.` : '\nAll paid.');

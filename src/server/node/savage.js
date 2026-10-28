@@ -9,7 +9,9 @@ import express from 'express';
 import removeJavaScript from 'teleportation-js/src/node-remove-javascript.js';
 import path from 'node:path';
 import sessionless from 'sessionless-node';
-import { REFERRAL_APPS, createStore, getAppCta, isBot, visitorKey, monthOf, tapCount } from './referrals.js';
+import { REFERRAL_APPS, getAppCta, isBot, visitorKey } from './referrals.js';
+import { createPoolStore, cardMember, isPubKey, monthOf } from './pool.js';
+import { createFountClient } from './fount-client.js';
 import { SHORT_LINK_HASH, createShortLinkStore, parseShortPath } from './shortlinks.js';
 // Node 18+ has a native global fetch - no need for the node-fetch package.
 
@@ -317,22 +319,32 @@ app.get('/user/:uuid/bdo', async (req, res) => {
     // palette is optional and validated in wrapHTML; a record without one
     // renders exactly as it did before palettes existed.
     res.send(wrapHTML(result.bdo.svg, imageUrl, title, vcardUrl, result.bdo.palette, description, cta));
+
+    // A view of a BizBuz or Linkitylink card earns its owner a nineum (see
+    // pool.js). After the response, so counting never slows a page.
+    if (REFERRAL_APPS[req.query.hash]?.kind === 'card') {
+      countVisit('view', req, req.params.uuid, result.bdo, REFERRAL_APPS[req.query.hash].app)
+        .catch((err) => console.warn('view not counted:', err.message));
+    }
   } catch (err) {
     console.warn('savage error:', err);
     res.status(500).send('Internal error');
   }
 });
 
-// ── Referral taps ───────────────────────────────────────────────────────────
+// ── Payment pool ────────────────────────────────────────────────────────────
 //
-// An invite card's "Get" button points here, carrying the card's own signed
-// query. savage counts the tap (see referrals.js for what counts) and sends
-// the visitor on to the App Store. The redirect target comes from
-// REFERRAL_APPS, never from the request, and a tap that can't be verified
-// still gets its redirect, it just isn't counted.
-const referralStore = createStore(process.env.SAVAGE_DATA_DIR
-  ? path.join(process.env.SAVAGE_DATA_DIR, 'referrals')
-  : path.join(process.cwd(), 'data', 'referrals'));
+// See pool.js for what earns and how it pays. Data in SAVAGE_DATA_DIR/pool
+// (default ./data/pool): back it up, it's the record of who is owed what.
+// FOUNT_URL (e.g. http://127.0.0.1:3006/) turns on minting; without it
+// actions are recorded and minted once it's set.
+const poolDir = process.env.SAVAGE_DATA_DIR
+  ? path.join(process.env.SAVAGE_DATA_DIR, 'pool')
+  : path.join(process.cwd(), 'data', 'pool');
+const pool = createPoolStore(poolDir);
+const fount = process.env.FOUNT_URL
+  ? createFountClient({ fountUrl: process.env.FOUNT_URL, keysFile: path.join(poolDir, 'fount-keys.json') })
+  : null;
 
 // The visitor's address as nginx saw it. X-Real-IP is set (overwritten) by
 // our nginx from the connection itself; X-Forwarded-For can't be trusted
@@ -347,6 +359,33 @@ const clientIp = (req) => {
 };
 const today = () => new Date().toISOString().slice(0, 10);
 
+// A tap or a view: once per visitor per card per day, never a bot, and
+// only for a card that names its owner.
+const countVisit = async (action, req, uuid, bdo, app) => {
+  const ua = req.get('user-agent');
+  const member = cardMember(bdo);
+  if (isBot(ua) || !member) return false;
+  const date = today();
+  const visitor = visitorKey(await pool.salt(), clientIp(req), ua, uuid, date);
+  return pool.record({ action, member, card: uuid, app, dedupe: `${action}|${uuid}|${visitor}|${date}`, date });
+};
+
+// A signature over `message` by `pubKey`, made in the last 5 minutes.
+const freshlySigned = (timestamp, signature, message, pubKey) => {
+  const age = Math.abs(Date.now() - Number(timestamp));
+  if (!(age <= 5 * 60 * 1000) || typeof signature !== 'string') return false;
+  try {
+    return sessionless.verifySignature(signature, message, pubKey);
+  } catch {
+    return false;
+  }
+};
+
+// An invite card's "Get" button, and a card's "Make your own", point here
+// with the card's own signed query. savage counts the tap and sends the
+// visitor on to the App Store. The redirect target comes from
+// REFERRAL_APPS, never from the request, and a tap that can't be verified
+// still gets its redirect, it just isn't counted.
 app.get('/r/:uuid', async (req, res) => {
   const referral = REFERRAL_APPS[req.query.hash];
   if (!referral) {
@@ -354,33 +393,21 @@ app.get('/r/:uuid', async (req, res) => {
   }
   res.set('Cache-Control', 'no-store');
   try {
-    const ua = req.get('user-agent');
-    if (!isBot(ua)) {
+    if (!isBot(req.get('user-agent'))) {
       const result = await fetchBdo(req.params.uuid, req.query);
-      if (!result.error && result.bdo && result.bdo.svg) {
-        const payout = result.bdo.payout && result.bdo.payout.pubKey && result.bdo.payout.addieURL
-          ? { pubKey: result.bdo.payout.pubKey, addieURL: result.bdo.payout.addieURL }
-          : null;
-        const date = today();
-        const salt = await referralStore.salt();
-        await referralStore.recordTap({
-          uuid: req.params.uuid,
-          app: referral.app,
-          payout,
-          visitor: visitorKey(salt, clientIp(req), ua, req.params.uuid, date),
-          date,
-        });
+      if (!result.error && result.bdo) {
+        await countVisit('tap', req, req.params.uuid, result.bdo, referral.app);
       }
     }
   } catch (err) {
     // Counting must never cost the visitor their App Store link.
-    console.warn('referral tap not counted:', err.message);
+    console.warn('tap not counted:', err.message);
   }
   res.redirect(302, referral.storeUrl);
 });
 
-// What an invite card has earned, for the app's share screen. Same signed
-// query as the card, so only someone holding the link can read it.
+// What a card has earned, for the app's share screen. Same signed query as
+// the card, so only someone holding the link can read it.
 app.get('/r/:uuid/stats', async (req, res) => {
   // Read by the BizBuz and LinkityLink share screens, from inside the app's
   // web view. Any origin may ask: the signed query is the credential.
@@ -392,24 +419,135 @@ app.get('/r/:uuid/stats', async (req, res) => {
   if (result.error || !result.bdo) {
     return res.status(result.status || 404).send({ error: 'Not found' });
   }
+  const member = cardMember(result.bdo);
+  const memberRecord = member ? (await pool.members())[member] : null;
   const months = [];
-  for (const month of (await referralStore.months()).slice(0, 12)) {
-    const card = (await referralStore.taps(month))[req.params.uuid];
-    const ledger = await referralStore.payouts(month);
-    const paid = ledger?.payees?.find((p) => p.cards?.includes(req.params.uuid));
-    if (card || paid) {
+  for (const month of (await pool.months()).slice(-12).reverse()) {
+    const actions = await pool.cardActivity(req.params.uuid, month);
+    const ledger = await pool.payouts(month);
+    const paid = member && ledger?.payees?.find((p) => p.pubKey === member);
+    const nineum = member ? ((await pool.tally(month))[member] || 0) : 0;
+    if (Object.values(actions).some(Boolean) || paid || nineum) {
       months.push({
         month,
-        taps: card ? tapCount(card) : 0,
+        taps: actions.tap,
+        actions,
+        nineum,
         paidCents: paid?.status === 'paid' ? paid.amountCents : 0,
         pendingCents: paid && paid.status !== 'paid' ? paid.amountCents : 0,
       });
     }
   }
   const current = monthOf(today());
-  const thisMonth = months.find((m) => m.month === current) || { month: current, taps: 0, paidCents: 0, pendingCents: 0 };
-  res.send({ thisMonth, months, connected: Boolean(result.bdo.payout) });
+  const thisMonth = months.find((m) => m.month === current)
+    || { month: current, taps: 0, actions: { tap: 0, view: 0, share: 0, purchase: 0 }, nineum: 0, paidCents: 0, pendingCents: 0 };
+  res.send({ thisMonth, months, connected: Boolean(memberRecord?.payout) });
 });
+
+// A HomeFront identity joins the pool, or updates its payout destination.
+// Body: { pubKey, timestamp, signature } where signature is over
+// timestamp + pubKey (a Fount create request, passed on to Fount), and
+// optionally payout: { pubKey, addieURL } with payoutSignature over
+// timestamp + pubKey + payout.pubKey + payout.addieURL. Answers { uuid }.
+app.post('/pool/register', express.json(), async (req, res) => {
+  const { pubKey, timestamp, signature, payout, payoutSignature } = req.body || {};
+  if (!isPubKey(pubKey) || typeof timestamp !== 'string' || typeof signature !== 'string') {
+    return res.status(400).send({ error: 'Send pubKey, timestamp and signature' });
+  }
+  if (!fount) return res.status(503).send({ error: 'The pool is not set up on this server' });
+  let destination = null;
+  if (payout !== undefined) {
+    if (!isPubKey(payout?.pubKey) || typeof payout?.addieURL !== 'string'
+        || !freshlySigned(timestamp, payoutSignature, timestamp + pubKey + payout.pubKey + payout.addieURL, pubKey)) {
+      return res.status(403).send({ error: 'The payout destination is not signed by this identity' });
+    }
+    destination = { pubKey: payout.pubKey, addieURL: payout.addieURL };
+  }
+  try {
+    const uuid = await fount.createMember({ pubKey, timestamp, signature });
+    await pool.register(pubKey.toLowerCase(), uuid, destination);
+    res.send({ uuid });
+  } catch (err) {
+    console.warn('pool register failed:', err.message);
+    res.status(403).send({ error: 'Fount did not accept that identity' });
+  }
+});
+
+// The owner shared their card from the app. Body: { uuid, query (the
+// card's signed query), timestamp, signature } with signature over
+// timestamp + uuid by the HomeFront identity named on the card. Once per
+// card a day: a share can't be verified any further than that.
+app.post('/pool/share', express.json(), async (req, res) => {
+  const { uuid, query, timestamp, signature } = req.body || {};
+  const app_ = REFERRAL_APPS[query?.hash];
+  if (typeof uuid !== 'string' || !app_ || app_.kind !== 'card') {
+    return res.status(400).send({ error: 'Send the card\'s uuid and signed query' });
+  }
+  const result = await fetchBdo(uuid, { timestamp: query.timestamp, hash: query.hash, signature: query.signature });
+  const member = !result.error && cardMember(result.bdo);
+  if (!member || !freshlySigned(timestamp, signature, timestamp + uuid, member)) {
+    return res.status(403).send({ error: 'Not signed by this card\'s owner' });
+  }
+  const date = today();
+  const counted = await pool.record({ action: 'share', member, card: uuid, app: app_.app, dedupe: `share|${uuid}|${date}`, date });
+  res.send({ counted });
+});
+
+// A GetPayed invoice was paid. Reported by eumachia, signed with a key in
+// POOL_REPORTERS (comma separated pubKeys). Body: { invoice, member,
+// timestamp, signature } with signature over timestamp + invoice + member,
+// where member is the HomeFront identity of the person who sent the
+// invoice. Once per invoice.
+app.post('/pool/purchase', express.json(), async (req, res) => {
+  const { invoice, member, timestamp, signature, reporter } = req.body || {};
+  const reporters = (process.env.POOL_REPORTERS || '').split(',').map((k) => k.trim().toLowerCase()).filter(Boolean);
+  if (typeof invoice !== 'string' || !isPubKey(member) || !reporters.includes(String(reporter).toLowerCase())
+      || !freshlySigned(timestamp, signature, timestamp + invoice + member, reporter)) {
+    return res.status(403).send({ error: 'Not a signed report from a known reporter' });
+  }
+  const date = today();
+  const counted = await pool.record({
+    action: 'purchase', member: member.toLowerCase(), card: null, app: 'getpayed', dedupe: `purchase|${invoice}`, date,
+  });
+  res.send({ counted });
+});
+
+// Mints what's been earned, in batches: every minute, each registered
+// member gets one grant per action for everything recorded since. People
+// who haven't registered yet keep their actions until they do. The batch is
+// stamped with the month it's minted in, which is the month it pays in.
+let minting = false;
+const mintEarned = async () => {
+  if (!fount || minting) return;
+  minting = true;
+  try {
+    const members = await pool.members();
+    const period = monthOf(today());
+    for (const [month, { events, idx }] of Object.entries(await pool.ungranted())) {
+      const groups = new Map();
+      for (const i of idx) {
+        const e = events[i];
+        if (!members[e.member]?.uuid) continue;
+        const key = `${e.member}|${e.action}`;
+        if (!groups.has(key)) groups.set(key, { uuid: members[e.member].uuid, action: e.action, idx: [] });
+        groups.get(key).idx.push(i);
+      }
+      for (const g of groups.values()) {
+        try {
+          await fount.grant(g.uuid, g.action, g.idx.length);
+          await pool.markGranted(month, g.idx, period);
+        } catch (err) {
+          console.warn(`minting ${g.idx.length} ${g.action} nineum failed:`, err.message);
+        }
+      }
+    }
+  } finally {
+    minting = false;
+  }
+};
+if (fount) {
+  setInterval(() => mintEarned().catch((err) => console.warn('minting failed:', err.message)), 60 * 1000).unref();
+}
 
 // Listen unconditionally, the same way bdo.js and addie.js do.
 //

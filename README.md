@@ -45,8 +45,10 @@ it.
 | `PORT` | `3012` | Listen port. Not savage's historical 3009 — on a shared allyabase box that belongs to minnie. |
 | `BDO_URL` | see below | Base URL of the BDO to read through to. A missing trailing slash is added for you. |
 | `PUBLIC_PREFIX` | `""` | Path prefix savage is mounted under externally, e.g. `/savage`. Only needed when the proxy doesn't send `X-Forwarded-Prefix`. |
-| `SAVAGE_DATA_DIR` | `./data` | Where referral taps and payouts are kept (`referrals/` under it). Back it up. |
-| `SAVAGE_GET_APP_CTA` | off | `on` adds a "Make your own" button to BizBuz and Linkitylink card pages, through the referral tap counter. Turn on when the referral program launches. |
+| `SAVAGE_DATA_DIR` | `./data` | Where the payment pool (`pool/`: members, actions, payouts, savage's Fount key) and short links (`shortlinks/`) are kept. Back it up. |
+| `FOUNT_URL` | unset | Fount for the payment pool, e.g. `http://127.0.0.1:3006/`. Unset, actions are recorded but nothing is minted and `/pool/register` answers 503. |
+| `POOL_REPORTERS` | unset | Comma-separated pubKeys allowed to report paid invoices to `/pool/purchase` (eumachia's). |
+| `SAVAGE_GET_APP_CTA` | off | `on` adds a "Make your own" button to BizBuz and Linkitylink card pages, through the tap counter. Turn on when the payment pool launches. |
 | `SHORT_LINK_BASE` | this request's address + `/l/` | Origin of Linkitylink short links, e.g. `https://linkityl.ink/` (`https://dev.linkityl.ink/` on dev). |
 | `CARD_PAGES_URL` | this request's address | Where short links redirect to, e.g. `https://prod.8as.world/savage/`. Must be set behind the linkityl.ink proxy. |
 | `LOCALHOST` | unset | Legacy shorthand: when set, `BDO_URL` becomes `http://127.0.0.1:3003/`. |

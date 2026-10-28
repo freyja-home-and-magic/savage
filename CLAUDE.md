@@ -129,38 +129,61 @@ branch.
   *interactive* pay page, which savage deliberately cannot do since it strips
   all JavaScript
 
-## Referral taps and payouts (October 2026)
+## The payment pool (October 2026)
 
-The HomeFront referral program: each month, 50% of what Apple pays for
-BizBuz and for LinkityLink is shared among the people whose invite cards
-and card pages were tapped through to the App Store, by tap count, capped at $50 a person. Logic in
-`src/server/node/referrals.js`, tested by `npm test`.
+HomeVentory's payment pool, as `getpayed/PAYMENT_POOL.md` describes it:
+useful actions earn nineum in HomeVentory's Fount galaxy, and after each
+month 50% of what Apple paid for the apps is shared by the nineum minted
+that month. Logic in `src/server/node/pool.js` (store and payout
+algorithm) and `fount-client.js`, tested by `npm test`. This replaced the
+first referral design (App Store taps only, per-app pools, a flat $50 cap).
 
-- **`GET /r/:uuid?<the card's signed query>`**: an invite card's "Get"
-  button. Counts one tap per visitor per card per day (visitor = salted hash
-  of IP and user agent; the IP is `X-Real-IP` from nginx, never the
-  client-settable first `X-Forwarded-For` entry), skips link-preview bots,
-  and always redirects to the app's App Store listing from `REFERRAL_APPS`
-  (never a URL from the request). Unverifiable taps still redirect, uncounted.
-- **`GET /r/:uuid/stats?<signed query>`**: taps and payouts for that card,
-  for the app's share screen.
-- **"Make your own" on card pages:** with `SAVAGE_GET_APP_CTA=on`, the page
-  for an ordinary BizBuz or Linkitylink card (hash `bizbuz-card` /
-  `linkitylink-card`) gets a second button under "Save Contact", pointing at
-  `/r/:uuid` with the card's own signed query. Taps credit the card's owner
-  exactly like invite taps, and share the same $50 cap, when the card
-  carries a `payout` (the apps add it once the program is live and the
-  owner is connected in GetPayed). Invite cards get no extra button; they
-  already are one. Off by default, so flip it with the program's launch.
-- **Data:** `SAVAGE_DATA_DIR/referrals/` (default `./data/referrals`, gitignored):
-  `taps-YYYY-MM.json`, `payouts-YYYY-MM.json`, and a `.salt`. Back it up;
-  it's the record of who is owed what.
-- **Paying:** `npm run referral-payouts -- --month 2026-10 --proceeds
-  bizbuz=420.00 --proceeds linkitylink=80.00` is a dry run; add `--pay` to
-  send through addie's `/platform/payout`, signed by the platform admin key
-  (`--new-admin-key` makes one). Only https *.8as.world addies are ever sent
-  a payout request, since the addie address on a card is its owner's to
-  write. Reruns skip anyone already paid.
+- **Who earns:** every HomeFront user has one HomeFront identity (a
+  sessionless key the apps share through the keychain), with a Fount user.
+  Cards carry its pubKey as `fount: { pubKey }`.
+- **`POST /pool/register`** `{pubKey, timestamp, signature, payout?,
+  payoutSignature?}`: `signature` is a Fount create request (over
+  `timestamp + pubKey`), which savage passes on to Fount; Fount's answer is
+  the proof of which uuid owns the key. A payout destination
+  (`{pubKey, addieURL}`, GetPayed's) must be signed by the identity, over
+  `timestamp + pubKey + payout.pubKey + payout.addieURL`, so nobody can
+  point someone else's earnings at themselves. Anyone can put any pubKey
+  on a card, but that only gifts nineum.
+- **What earns, one nineum each:**
+  - `tap`: `GET /r/:uuid`, an invite card's "Get" or a card page's "Make your own".
+  - `view`: a BizBuz or Linkitylink card's page (`bizbuz-card` / `linkitylink-card`).
+  - `share`: `POST /pool/share` `{uuid, query, timestamp, signature}`, signed
+    by the identity on the card. Once per card a day, since it can't be
+    verified further.
+  - `purchase`: `POST /pool/purchase` `{invoice, member, reporter, timestamp,
+    signature}` from eumachia, whose key must be in `POOL_REPORTERS`. Once
+    per invoice. Credits the person who sent the invoice.
+
+  Taps and views count once per visitor per card per day (visitor = salted
+  hash of IP and user agent; the IP is `X-Real-IP`), never bots. Nothing is
+  credited through a referral's referrals.
+- **Minting:** every minute, savage mints what each registered member has
+  earned, one grant per action, with its own Fount user (needs an `fe` in
+  the galaxy). Size, texture and shape are random, the direction byte says
+  which action. Unregistered members keep their actions until they
+  register. A batch counts for the month it's minted in, which is what its
+  period byte says.
+- **Setup:** `npm run pool-setup` (see the script's header): make the
+  galaxy owner key, claim the galaxy, print savage's Fount uuid, grant it
+  minting. Fount needs `PERIOD_GALAXIES=<galaxy>`. Fount's default galaxy
+  28880014 is open to anyone and must not be used.
+- **Paying:** `npm run pool-payouts -- --month 2026-10 --proceeds
+  bizbuz=420.00 --proceeds linkitylink=80.00` is a dry run; `--pay` sends
+  through addie's `/platform/payout` with the platform admin key, only to
+  https `*.8as.world` addies. The pool is 50% of total proceeds, shared by
+  nineum among people with a payout destination; the cap is the average
+  share plus two standard deviations (over those people), and what it
+  frees is shared among those below it, repeatedly, until nobody is over.
+  Reruns skip anyone already paid.
+- **Data:** `SAVAGE_DATA_DIR/pool/`: `members.json`, `events-YYYY-MM.json`,
+  `payouts-YYYY-MM.json`, `.salt`, and `fount-keys.json` (savage's Fount
+  key, mode 600). Back it up; it's the record of who is owed what.
+- **"Make your own"** on card pages is still behind `SAVAGE_GET_APP_CTA=on`.
 
 ## Linkitylink short links (October 2026)
 

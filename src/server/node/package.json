@@ -15,7 +15,8 @@
     "test:vcard": "node scripts/test-vcard.mjs",
     "smoke": "node scripts/smoke-test.mjs",
     "test": "node --test 'test/*.test.js'",
-    "referral-payouts": "node scripts/referral-payouts.mjs"
+    "pool-payouts": "node scripts/pool-payouts.mjs",
+    "pool-setup": "node scripts/pool-setup.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",
